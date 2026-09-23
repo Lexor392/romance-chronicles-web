@@ -1,5 +1,6 @@
-const portrait = (id) => `./assets/cast/${id}.webp`;
-const background = (id) => `./assets/backgrounds/${id}.svg`;
+const asset = (path) => typeof window === 'undefined' ? path : new URL(path, window.location.href).href;
+const portrait = (id) => asset(`./assets/cast/${id}.webp`);
+const background = (id) => asset(`./assets/backgrounds/${id}.svg`);
 
 const line = (speaker, text, mood = '') => ({ speaker, text, mood });
 const choice = (id, label, route, effect = 1) => ({ id, label, route, effect });
@@ -217,5 +218,7 @@ export const story = {
 };
 
 export const storyById = { [story.id]: story };
+
+
 
 
