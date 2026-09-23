@@ -1,31 +1,33 @@
 import { describe, expect, it } from 'vitest';
-import { applyChoice, canChoose, defaultStoryState, percentComplete, resolveEnding } from './game';
-import { stories } from '../data/stories';
+import { applyChoice, defaultState, percentComplete, resolveEnding } from './game';
+import { story } from '../data/stories';
 
-describe('game engine', () => {
-  it('applies choice effects and records the choice', () => {
-    const state = defaultStoryState('aurora');
-    const next = applyChoice(state, { id: 'test', effects: { bond: 2, courage: 1 } });
-    expect(next.metrics).toEqual({ bond: 2, courage: 1, insight: 0 });
-    expect(next.chosen).toContain('test');
+describe('after-last-call visual novel engine', () => {
+  it('starts with a clean route state', () => {
+    const state = defaultState(story.id);
+    expect(state.storyId).toBe('after-last-call');
+    expect(state.chapterIndex).toBe(0);
+    expect(state.routeCounts).toEqual({ artem: 0, nikita: 0, ilya: 0, self: 0 });
   });
 
-  it('locks choices until requirements are met', () => {
-    expect(canChoose({ requires: { insight: 2 } }, { insight: 1 })).toBe(false);
-    expect(canChoose({ requires: { insight: 2 } }, { insight: 2 })).toBe(true);
+  it('records a choice and advances to the next chapter', () => {
+    const state = defaultState(story.id);
+    const next = applyChoice(state, { id: 'chapter-1-nikita', route: 'nikita', effect: 2 }, story);
+    expect(next.chapterIndex).toBe(1);
+    expect(next.routeCounts.nikita).toBe(2);
+    expect(next.chosen).toEqual(['chapter-1-nikita']);
+    expect(next.completed).toBe(false);
   });
 
-  it('resolves three distinct ending tiers', () => {
-    const story = stories[0];
-    expect(resolveEnding(story, { bond: 5, courage: 5, insight: 5 }).id).toBe('hope');
-    expect(resolveEnding(story, { bond: 3, courage: 2, insight: 2 }).id).toBe('bittersweet');
-    expect(resolveEnding(story, { bond: 0, courage: 1, insight: 1 }).id).toBe('shadow');
+  it('resolves the final route and protects a close tie with the self ending', () => {
+    expect(resolveEnding(story, { endingId: null, routeCounts: { artem: 7, nikita: 2, ilya: 1, self: 0 } }).id).toBe('artem');
+    expect(resolveEnding(story, { endingId: null, routeCounts: { artem: 2, nikita: 2, ilya: 1, self: 0 } }).id).toBe('self');
+    expect(resolveEnding(story, { endingId: 'ilya', routeCounts: { artem: 0, nikita: 0, ilya: 0, self: 0 } }).id).toBe('ilya');
   });
 
-  it('reports progress across six chapters', () => {
-    const story = stories[1];
-    expect(percentComplete(defaultStoryState(story.id), story)).toBe(0);
-    expect(percentComplete({ ...defaultStoryState(story.id), chapterIndex: 3 }, story)).toBe(50);
-    expect(percentComplete({ ...defaultStoryState(story.id), completed: true }, story)).toBe(100);
+  it('reports progress across eleven chapters', () => {
+    expect(percentComplete(defaultState(story.id), story)).toBe(0);
+    expect(percentComplete({ ...defaultState(story.id), chapterIndex: 5 }, story)).toBe(45);
+    expect(percentComplete({ ...defaultState(story.id), completed: true }, story)).toBe(100);
   });
 });

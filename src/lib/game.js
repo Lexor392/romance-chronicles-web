@@ -1,12 +1,13 @@
-export const STORAGE_KEY = 'lumen-save-v1';
+export const STORAGE_KEY = 'lumen-visual-novel-v2';
 
-export const defaultStoryState = (storyId) => ({
+export const defaultState = (storyId) => ({
   storyId,
   chapterIndex: 0,
-  metrics: { bond: 0, courage: 0, insight: 0 },
+  routeCounts: { artem: 0, nikita: 0, ilya: 0, self: 0 },
   chosen: [],
   completed: false,
   endingId: null,
+  epilogueSeen: false,
   updatedAt: Date.now()
 });
 
@@ -37,38 +38,35 @@ export function saveGame(save) {
 }
 
 export function getStoryState(save, storyId) {
-  return save.stories[storyId] || defaultStoryState(storyId);
+  return save.stories[storyId] || defaultState(storyId);
 }
 
-export function canChoose(choice, metrics) {
-  if (!choice.requires) return true;
-  return Object.entries(choice.requires).every(([key, value]) => (metrics[key] || 0) >= value);
-}
-
-export function applyChoice(state, choice) {
-  const metrics = { ...state.metrics };
-  Object.entries(choice.effects || {}).forEach(([key, value]) => {
-    metrics[key] = Math.max(-5, Math.min(12, (metrics[key] || 0) + value));
-  });
+export function applyChoice(state, choice, story) {
+  const routeCounts = { ...state.routeCounts };
+  routeCounts[choice.route] = (routeCounts[choice.route] || 0) + (choice.effect || 1);
+  const isFinalChapter = state.chapterIndex >= story.chapters.length - 1;
   return {
     ...state,
-    metrics,
+    chapterIndex: isFinalChapter ? state.chapterIndex : state.chapterIndex + 1,
+    routeCounts,
     chosen: [...state.chosen, choice.id],
+    completed: isFinalChapter,
+    endingId: isFinalChapter ? choice.route : null,
     updatedAt: Date.now()
   };
 }
 
-export function resolveEnding(story, metrics) {
-  const score = metrics.bond + metrics.courage + metrics.insight;
-  const endingId = score >= story.endingThresholds.heroic && metrics.bond >= 4
-    ? 'hope'
-    : score >= story.endingThresholds.bittersweet
-      ? 'bittersweet'
-      : 'shadow';
-  return story.endings.find((ending) => ending.id === endingId) || story.endings[0];
+export function resolveEnding(story, state) {
+  if (state.endingId && story.endings[state.endingId]) return story.endings[state.endingId];
+  const scores = Object.entries(state.routeCounts).sort((a, b) => b[1] - a[1]);
+  const [topRoute, topScore] = scores[0];
+  const secondScore = scores[1]?.[1] || 0;
+  const endingId = topRoute !== 'self' && topScore - secondScore <= 1 ? 'self' : topRoute;
+  return story.endings[endingId] || story.endings.self;
 }
 
 export function percentComplete(state, story) {
   if (state.completed) return 100;
   return Math.round((state.chapterIndex / story.chapters.length) * 100);
 }
+

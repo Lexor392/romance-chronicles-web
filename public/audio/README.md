@@ -1,3 +1,3 @@
-# Audio credits
+# Audio assets
 
-Lumen uses a small procedural ambient soundtrack generated with the Web Audio API at runtime. No third-party recordings or copyrighted music are bundled with the project.
+Локальные WAV-треки `after-last-call-theme.wav` и `after-last-call-night.wav` созданы специально для этой оригинальной визуальной новеллы. Они подключаются через HTML Audio API, зацикливаются и управляются переключателем музыки в настройках.

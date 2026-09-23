@@ -1,27 +1,29 @@
 import { useEffect, useMemo, useState } from 'react';
-import { stories } from './data/stories';
-import {
-  applyChoice,
-  canChoose,
-  emptySave,
-  getStoryState,
-  loadSave,
-  percentComplete,
-  resolveEnding,
-  saveGame,
-  defaultStoryState
-} from './lib/game';
+import { story } from './data/stories';
+import { applyChoice, defaultState, emptySave, getStoryState, loadSave, percentComplete, resolveEnding, saveGame } from './lib/game';
 import { playChoiceSound, playMusic, stopMusic } from './lib/audio';
 
-const icons = { bond: '♡', courage: '✦', insight: '◈' };
+const speakerMap = {
+  'Ира': 'ira',
+  'Артем': 'artem',
+  'Никита': 'nikita',
+  'Илья': 'ilya',
+  'Алина': 'alina',
+  'Директор': 'director',
+  'Рассказчик': 'ira'
+};
 
 function App() {
   const [save, setSave] = useState(() => loadSave());
-  const [view, setView] = useState('library');
-  const [selectedId, setSelectedId] = useState(null);
-  const [readerChoice, setReaderChoice] = useState(null);
+  const [view, setView] = useState('home');
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const selectedStory = stories.find((story) => story.id === selectedId) || null;
+  const [lineIndex, setLineIndex] = useState(0);
+  const [conversationDone, setConversationDone] = useState(false);
+  const [pendingChoice, setPendingChoice] = useState(null);
+  const state = getStoryState(save, story.id);
+  const chapter = story.chapters[state.chapterIndex] || story.chapters[story.chapters.length - 1];
+  const activeLine = chapter.lines[lineIndex] || chapter.lines[chapter.lines.length - 1];
+  const activeEnding = state.completed ? resolveEnding(story, state) : null;
 
   const updateSave = (updater) => {
     setSave((current) => {
@@ -32,249 +34,171 @@ function App() {
   };
 
   useEffect(() => {
-    if (save.settings.music && view === 'reader' && selectedStory) {
-      playMusic(selectedStory.track);
-    } else if (!save.settings.music || view !== 'reader') {
-      stopMusic();
-    }
-    return () => stopMusic();
-  }, [save.settings.music, selectedStory, view]);
+    if (view !== 'reader' || !save.settings.music) stopMusic();
+    return () => { if (view !== 'reader') stopMusic(); };
+  }, [view, save.settings.music]);
 
-  const openStory = (storyId) => {
-    setSelectedId(storyId);
-    setView('story');
-    setReaderChoice(null);
-  };
-
-  const beginStory = (storyId, restart = false) => {
-    const story = stories.find((item) => item.id === storyId);
-    if (!story) return;
-    const existing = getStoryState(save, storyId);
-    const state = restart ? defaultStoryState(storyId) : existing;
-    updateSave((current) => ({
-      ...current,
-      lastStoryId: storyId,
-      stories: { ...current.stories, [storyId]: state }
-    }));
-    setSelectedId(storyId);
-    setReaderChoice(null);
+  const start = (restart = false) => {
+    const nextState = restart ? defaultState(story.id) : state;
+    updateSave((current) => ({ ...current, stories: { ...current.stories, [story.id]: nextState }, lastStoryId: story.id }));
+    setLineIndex(0);
+    setConversationDone(false);
+    setPendingChoice(null);
     setView('reader');
+    if (save.settings.music) playMusic(story.audio.theme);
   };
 
-  const currentState = selectedStory ? getStoryState(save, selectedStory.id) : null;
-  const currentChapter = selectedStory && currentState
-    ? selectedStory.chapters[currentState.chapterIndex]
-    : null;
+  const advanceLine = () => {
+    if (pendingChoice) return;
+    if (lineIndex < chapter.lines.length - 1) setLineIndex((value) => value + 1);
+    else setConversationDone(true);
+  };
 
   const choose = (choice) => {
-    if (!selectedStory || !currentState || readerChoice || !canChoose(choice, currentState.metrics)) return;
+    if (pendingChoice) return;
     if (save.settings.sound) playChoiceSound();
-    const nextState = applyChoice(currentState, choice);
+    const staged = applyChoice(state, choice, story);
     updateSave((current) => ({
       ...current,
-      lastStoryId: selectedStory.id,
-      stories: { ...current.stories, [selectedStory.id]: nextState }
+      stories: {
+        ...current.stories,
+        [story.id]: { ...staged, chapterIndex: state.chapterIndex, completed: false, endingId: null, pendingChoiceId: choice.id }
+      },
+      lastStoryId: story.id
     }));
-    setReaderChoice(choice);
+    setPendingChoice(choice);
   };
 
-  const continueChapter = () => {
-    if (!selectedStory || !currentState || !readerChoice) return;
-    const atFinalChapter = currentState.chapterIndex >= selectedStory.chapters.length - 1;
-    if (atFinalChapter) {
-      const ending = resolveEnding(selectedStory, currentState.metrics);
-      updateSave((current) => ({
-        ...current,
-        lastStoryId: selectedStory.id,
-        stories: {
-          ...current.stories,
-          [selectedStory.id]: { ...currentState, completed: true, endingId: ending.id }
-        }
-      }));
-    } else {
-      updateSave((current) => ({
-        ...current,
-        stories: {
-          ...current.stories,
-          [selectedStory.id]: { ...currentState, chapterIndex: currentState.chapterIndex + 1 }
-        }
-      }));
-      setReaderChoice(null);
+  const continueAfterChoice = () => {
+    if (!pendingChoice) return;
+    const finalChapter = state.chapterIndex >= story.chapters.length - 1;
+    if (finalChapter) {
+      const staged = applyChoice(state, pendingChoice, story);
+      const finalState = { ...staged, completed: true, endingId: pendingChoice.route, pendingChoiceId: null };
+      updateSave((current) => ({ ...current, stories: { ...current.stories, [story.id]: finalState } }));
+      setPendingChoice(null);
+      setView('ending');
+      return;
     }
-  };
-
-  const resetAll = () => {
-    const next = emptySave();
-    saveGame(next);
-    setSave(next);
-    setSelectedId(null);
-    setReaderChoice(null);
-    setView('library');
+    updateSave((current) => ({
+      ...current,
+      stories: {
+        ...current.stories,
+        [story.id]: {
+          ...getStoryState(current, story.id),
+          chapterIndex: state.chapterIndex + 1,
+          pendingChoiceId: null,
+          updatedAt: Date.now()
+        }
+      }
+    }));
+    setLineIndex(0);
+    setConversationDone(false);
+    setPendingChoice(null);
   };
 
   const toggleSetting = (key) => {
-    updateSave((current) => ({
-      ...current,
-      settings: { ...current.settings, [key]: !current.settings[key] }
-    }));
+    const enabled = !save.settings[key];
+    updateSave((current) => ({ ...current, settings: { ...current.settings, [key]: enabled } }));
+    if (key === 'music') {
+      if (enabled && view === 'reader') playMusic(story.audio.theme);
+      if (!enabled) stopMusic();
+    }
+  };
+
+  const resetProgress = () => {
+    const next = emptySave();
+    saveGame(next);
+    setSave(next);
+    setView('home');
+    setLineIndex(0);
+    setConversationDone(false);
+    setPendingChoice(null);
   };
 
   return (
     <div className="app-shell">
-      <Header view={view} onHome={() => { setView('library'); setSelectedId(null); }} onSettings={() => setSettingsOpen(true)} />
-      <main>
-        {view === 'library' && <Library save={save} onOpen={openStory} onResume={(id) => beginStory(id)} />}
-        {view === 'story' && selectedStory && (
-          <StoryDetail
-            story={selectedStory}
-            state={getStoryState(save, selectedStory.id)}
-            onBack={() => setView('library')}
-            onStart={() => beginStory(selectedStory.id)}
-            onRestart={() => beginStory(selectedStory.id, true)}
-          />
-        )}
-        {view === 'reader' && selectedStory && currentChapter && (
-          <Reader
-            story={selectedStory}
-            state={currentState}
-            chapter={currentChapter}
-            selectedChoice={readerChoice}
-            onChoice={choose}
-            onContinue={continueChapter}
-            onBack={() => setView('story')}
-          />
-        )}
-      </main>
-      {settingsOpen && (
-        <Settings
-          settings={save.settings}
-          onToggle={toggleSetting}
-          onReset={resetAll}
-          onClose={() => setSettingsOpen(false)}
-        />
-      )}
+      <Topbar view={view} onHome={() => { setView('home'); setPendingChoice(null); }} onSettings={() => setSettingsOpen(true)} />
+      {view === 'home' && <Home state={state} onStart={start} onSettings={() => setSettingsOpen(true)} />}
+      {view === 'reader' && <Reader story={story} state={state} chapter={chapter} line={activeLine} lineIndex={lineIndex} conversationDone={conversationDone} pendingChoice={pendingChoice} onAdvance={advanceLine} onChoice={choose} onContinue={continueAfterChoice} onQuit={() => setView('home')} />}
+      {view === 'ending' && activeEnding && <Ending ending={activeEnding} onRestart={() => start(true)} onEpilogue={() => setView('epilogue')} />}
+      {view === 'epilogue' && <Epilogue onHome={() => setView('home')} />}
+      {settingsOpen && <Settings settings={save.settings} onToggle={toggleSetting} onReset={resetProgress} onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }
 
-function Header({ view, onHome, onSettings }) {
-  return (
-    <header className="topbar">
-      <button className="brand" onClick={onHome} aria-label="На главную">
-        <span className="brand-mark">✦</span>
-        <span><strong>LUMEN</strong><small>истории на выбор</small></span>
-      </button>
-      <nav className="topnav" aria-label="Основная навигация">
-        <button className={view === 'library' ? 'nav-link active' : 'nav-link'} onClick={onHome}>Библиотека</button>
-        <button className="icon-button" onClick={onSettings} aria-label="Настройки">⚙</button>
-      </nav>
-    </header>
-  );
+function Topbar({ view, onHome, onSettings }) {
+  return <header className="topbar">
+    <button className="brand" onClick={onHome}><span className="brand-mark">✦</span><span><strong>LUMEN</strong><small>визуальная новелла</small></span></button>
+    <div className="top-actions"><span className="top-story">ПОСЛЕ ПОСЛЕДНЕГО ЗВОНКА</span>{view !== 'home' && <button className="quiet-button" onClick={onHome}>главное меню</button>}<button className="icon-button" onClick={onSettings} aria-label="Настройки">⚙</button></div>
+  </header>;
 }
 
-function Library({ save, onOpen, onResume }) {
-  const resumeStory = save.lastStoryId ? stories.find((story) => story.id === save.lastStoryId) : null;
-  return (
-    <div className="page library-page">
-      <section className="hero-intro">
-        <div className="eyebrow"><span className="eyebrow-line" /> КОЛЛЕКЦИЯ 01</div>
-        <h1>Твои решения.<br /><em>Твоя история.</em></h1>
-        <p>Три мира, где одна встреча может изменить всё. Выбирай осторожно — некоторые тайны запоминают тебя.</p>
-        {resumeStory && !getStoryState(save, resumeStory.id).completed && (
-          <button className="resume-banner" onClick={() => onResume(resumeStory.id)}>
-            <span className="resume-icon">↗</span><span><small>ПРОДОЛЖИТЬ</small><strong>{resumeStory.title}</strong></span><span className="arrow">→</span>
-          </button>
-        )}
-      </section>
-      <section className="story-grid" aria-label="Истории">
-        {stories.map((story, index) => <StoryCard key={story.id} story={story} state={getStoryState(save, story.id)} index={index} onOpen={onOpen} />)}
-      </section>
-      <footer className="library-footer"><span>ОРИГИНАЛЬНЫЕ ИСТОРИИ · 2026</span><span>Сделано для тех, кто выбирает сердцем <i>♡</i></span></footer>
-    </div>
-  );
-}
-
-function StoryCard({ story, state, index, onOpen }) {
+function Home({ state, onStart }) {
   const progress = percentComplete(state, story);
-  return (
-    <article className={`story-card ${story.gradient}`} style={{ '--accent': story.accent, '--delay': `${index * 100}ms` }}>
-      <button className="card-art" onClick={() => onOpen(story.id)} aria-label={`Открыть ${story.title}`}>
-        <img src={story.cover} alt="" />
-        <span className="card-number">0{index + 1}</span>
-        <span className="card-status">{state.completed ? 'ЗАВЕРШЕНО' : state.chapterIndex > 0 ? `${progress}% ПРОЙДЕНО` : 'НОВАЯ ИСТОРИЯ'}</span>
-      </button>
-      <div className="card-body">
-        <span className="card-subtitle">{story.subtitle}</span>
-        <h2>{story.title}</h2>
-        <p>{story.description}</p>
-        <div className="tag-row">{story.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>
-        <button className="text-button" onClick={() => onOpen(story.id)}>Открыть историю <span>↗</span></button>
-      </div>
-    </article>
-  );
+  return <main className="home-page" style={{ "--hero-scene": `url(${story.cover})` }}>
+    <section className="novel-hero">
+      <div className="hero-glow" />
+      <div className="hero-kicker">ОРИГИНАЛЬНАЯ РОМАНТИЧЕСКАЯ ДРАМА <span>·</span> 18+</div>
+      <h1>После последнего<br /><em>звонка</em></h1>
+      <p>Один последний учебный год. Три чувства, одна тайна академии и выбор, который нельзя сделать за тебя.</p>
+      <div className="hero-actions"><button className="primary-button large" onClick={() => onStart(state.completed)}>{state.completed ? 'Пройти заново' : state.chapterIndex > 0 ? 'Продолжить историю' : 'Начать историю'} <span>→</span></button>{state.chapterIndex > 0 && !state.completed && <span className="home-progress">Глава {state.chapterIndex + 1} из {story.chapters.length}<b><i style={{ width: `${progress}%` }} /></b></span>}</div>
+      <div className="hero-note"><span>«</span><i>Любовь, предательство, дружба<br />и выбор, который изменит всё.</i><span>»</span></div>
+    </section>
+    <section className="novel-info">
+      <div className="chapter-map"><span className="section-label">ТВОЯ ИСТОРИЯ</span><h2>11 глав.<br /><em>4 пути.</em></h2><p>Каждая реплика меняет отношение персонажей. В финале решающим станет не один выбор, а то, кем ты была весь этот год.</p><div className="route-legend"><span><i className="route-dot artem" /> Артем</span><span><i className="route-dot nikita" /> Никита</span><span><i className="route-dot ilya" /> Илья</span><span><i className="route-dot self" /> Ира</span></div></div>
+      <div className="cast-preview"><span className="section-label">ГЛАВНЫЕ ГЕРОИ</span><div className="cast-home-grid">{story.characters.slice(0, 4).map((person) => <div className="cast-home-card" key={person.id}><img src={person.portrait} alt="" /><span style={{ color: person.color }}>{person.name}</span><small>{person.role}</small></div>)}</div></div>
+    </section>
+    <footer className="home-footer"><span>Автосохранение включено</span><span>Сделано для тех, кто выбирает сердцем <i>♡</i></span></footer>
+  </main>;
 }
 
-function StoryDetail({ story, state, onBack, onStart, onRestart }) {
-  const ending = state.completed ? story.endings.find((item) => item.id === state.endingId) : null;
-  return (
-    <div className={`page detail-page ${story.gradient}`} style={{ '--accent': story.accent }}>
-      <button className="back-button" onClick={onBack}>← Все истории</button>
-      <div className="detail-layout">
-        <div className="detail-visual"><img src={story.cover} alt="" /><div className="visual-stamp">{story.hook}</div></div>
-        <div className="detail-copy">
-          <span className="card-subtitle">{story.subtitle}</span>
-          <h1>{story.title}</h1>
-          <p className="detail-description">{story.description}</p>
-          <div className="detail-rule" />
-          <div className="detail-meta"><span>6 глав</span><span>3 концовки</span><span>♡ выборы</span></div>
-          {ending && <div className={`ending-note ${ending.tone}`}><small>ТВОЯ КОНЦОВКА</small><strong>{ending.icon} {ending.title}</strong></div>}
-          <div className="detail-actions">
-            <button className="primary-button" onClick={state.completed ? onRestart : onStart}>{state.completed ? 'Пройти заново' : state.chapterIndex > 0 ? 'Продолжить' : 'Начать историю'} <span>→</span></button>
-            {state.chapterIndex > 0 && !state.completed && <span className="progress-caption">Глава {state.chapterIndex + 1} из {story.chapters.length}</span>}
-          </div>
-        </div>
-      </div>
-      <section className="cast-section"><div><span className="eyebrow"><span className="eyebrow-line" /> ПЕРСОНАЖИ</span><h2>Те, кто войдёт<br /><em>в твою историю</em></h2></div><div className="cast-grid">{story.characters.map((person) => <div className="cast-card" key={person.id}><img src={person.portrait} alt="" /><span>{person.role}</span><strong>{person.name}</strong></div>)}</div></section>
-    </div>
-  );
+function Reader({ story, state, chapter, line, lineIndex, conversationDone, pendingChoice, onAdvance, onChoice, onContinue, onQuit }) {
+  const speaker = story.characters.find((person) => person.id === speakerMap[line.speaker]);
+  const progress = Math.round(((state.chapterIndex + (pendingChoice ? 1 : 0)) / story.chapters.length) * 100);
+  const lineProgress = Math.round(((lineIndex + 1) / chapter.lines.length) * 100);
+  return <main className="vn-reader" style={{ '--scene': `url(${pendingChoice ? chapter.background : chapter.background})` }}>
+    <div className="scene-background" />
+    <div className="scene-color" />
+    <div className="reader-hud"><button className="reader-exit" onClick={onQuit}>← меню</button><div className="chapter-progress"><span>ГЛАВА {chapter.number} / 11</span><b>{chapter.title}</b></div><div className="hud-right"><span>{progress}%</span><button onClick={onQuit}>×</button></div></div>
+    <div className="location-chip"><span className="location-pin">✦</span>{chapter.location}<small>{chapter.subtitle}</small></div>
+    {speaker && <div className={speaker.id === 'ira' ? 'character-stage protagonist' : 'character-stage'}><img src={speaker.portrait} alt={speaker.name} /><div className="character-nameplate" style={{ '--character': speaker.color }}><small>{speaker.role}</small><strong>{speaker.name}</strong></div></div>}
+    <section className="dialogue-panel" onClick={conversationDone || pendingChoice ? undefined : onAdvance}>
+      <div className="dialogue-top"><span className="dialogue-mode">{line.speaker === 'Рассказчик' ? 'РАССКАЗ' : 'ДИАЛОГ'}</span><span className="line-progress"><i style={{ width: `${lineProgress}%` }} /></span><span className="tap-hint">{conversationDone || pendingChoice ? '' : 'нажми, чтобы продолжить'} <b>⌄</b></span></div>
+      <div className="dialogue-text"><h2>{line.speaker}</h2><p>{pendingChoice ? pendingChoice.result || `Выбор «${pendingChoice.label}» принят. Эта история запомнит его.` : line.text}</p></div>
+      {!pendingChoice && conversationDone && <ChoiceList choices={chapter.choices} onChoice={onChoice} />}
+      {pendingChoice && <button className="continue-button" onClick={onContinue}>{state.chapterIndex >= story.chapters.length - 1 ? 'Открыть финал' : 'Следующая глава'} <span>→</span></button>}
+    </section>
+    <div className="reader-bottom"><div className="route-score"><span className="route-pill artem">А {state.routeCounts.artem}</span><span className="route-pill nikita">Н {state.routeCounts.nikita}</span><span className="route-pill ilya">И {state.routeCounts.ilya}</span></div><div className="full-progress"><i style={{ width: `${Math.max(3, progress)}%` }} /></div><span className="save-label">сохранено автоматически</span></div>
+  </main>;
 }
 
-function Reader({ story, state, chapter, selectedChoice, onChoice, onContinue, onBack }) {
-  const ending = state.completed ? story.endings.find((item) => item.id === state.endingId) : null;
-  const progress = Math.round(((state.chapterIndex + (selectedChoice ? 1 : 0)) / story.chapters.length) * 100);
-  return (
-    <div className={`reader ${story.gradient}`} style={{ '--accent': story.accent, '--scene': `url(${chapter.art})` }}>
-      <div className="reader-top"><button className="reader-back" onClick={onBack}>← выйти</button><span>{story.title}</span><span className="reader-chapter">ГЛАВА {chapter.number} / 06</span></div>
-      <div className="reader-stage">
-        <div className="scene-layer" />
-        <div className="scene-vignette" />
-        <div className="chapter-label"><small>{chapter.eyebrow}</small><strong>{chapter.title}</strong><span>{chapter.number.toString().padStart(2, '0')}</span></div>
-        <div className="metrics-bar"><Metric icon="♡" label="связь" value={state.metrics.bond} /><Metric icon="✦" label="смелость" value={state.metrics.courage} /><Metric icon="◈" label="интуиция" value={state.metrics.insight} /></div>
-        <div className="dialogue-wrap">
-          <div className="speaker-card"><span className="speaker-dot" /><span>{chapter.speaker}</span><small>{chapter.location.includes('assets') ? 'Повествование' : 'Сцена'}</small></div>
-          <div className="dialogue-card"><p>{chapter.text}</p>{selectedChoice ? <div className="choice-result"><span>ТВОЙ ВЫБОР</span><strong>{selectedChoice.label}</strong><p>{selectedChoice.result}</p><button className="continue-button" onClick={onContinue}>{state.chapterIndex >= story.chapters.length - 1 ? 'Узнать финал' : 'Продолжить'} <span>→</span></button></div> : <div className="choices"><span className="choices-label">Как ты поступишь?</span>{chapter.choices.map((choice) => <ChoiceButton key={choice.id} choice={choice} metrics={state.metrics} onClick={() => onChoice(choice)} />)}</div>}</div>
-        </div>
-      </div>
-      <div className="reader-bottom"><span>Сохранение включено автоматически</span><div className="reader-progress"><i style={{ width: `${Math.max(4, progress)}%` }} /></div><span>{Math.max(1, progress)}%</span></div>
-      {ending && <div className="ending-overlay"><div className={`ending-card ${ending.tone}`}><span className="ending-icon">{ending.icon}</span><small>ИСТОРИЯ ЗАВЕРШЕНА</small><h2>{ending.title}</h2><p>{ending.text}</p><button className="primary-button" onClick={onBack}>Вернуться к истории <span>→</span></button></div></div>}
-    </div>
-  );
+function ChoiceList({ choices, onChoice }) {
+  return <div className="choice-list"><span className="choice-question">Как ты поступишь?</span>{choices.map((choice) => <button className={`vn-choice route-${choice.route}`} key={choice.id} onClick={(event) => { event.stopPropagation(); onChoice(choice); }}><span className="choice-route">{choice.route === 'artem' ? 'А' : choice.route === 'nikita' ? 'Н' : choice.route === 'ilya' ? 'И' : 'Я'}</span><span>{choice.label}</span><b>→</b></button>)}</div>;
 }
 
-function ChoiceButton({ choice, metrics, onClick }) {
-  const available = canChoose(choice, metrics);
-  const effect = Object.entries(choice.effects || {})[0];
-  const requirement = Object.entries(choice.requires || {})[0];
-  const requirementLabel = requirement ? ({ bond: 'связь', courage: 'смелость', insight: 'интуиция' }[requirement[0]] || requirement[0]) : 'нужен ресурс';
-  return <button className={`choice-button ${!available ? 'locked' : ''}`} onClick={onClick} disabled={!available}><span className="choice-symbol">{available ? '↳' : '◇'}</span><span>{choice.label}</span>{effect && available && <small>{icons[effect[0]]} {effect[1] > 0 ? '+' : ''}{effect[1]}</small>}{!available && <small>нужна {requirementLabel} {requirement?.[1]}</small>}</button>;
+function Ending({ ending, onRestart, onEpilogue }) {
+  const character = story.characters.find((person) => person.id === ending.character);
+  return <main className="ending-screen" style={{ '--scene': `url(${ending.background})` }}><div className="ending-bg" /><div className="ending-shade" /><div className="ending-content"><span className="ending-kicker">ИСТОРИЯ ЗАВЕРШЕНА</span><span className="ending-mark">{ending.character === 'ira' ? '✦' : '♡'}</span><h1>{ending.title}</h1><p className="ending-subtitle">{ending.subtitle}</p><div className="ending-dialogue">{ending.lines.map((item, index) => <p key={index}><strong>{item.speaker}</strong>{item.text}</p>)}</div><div className="ending-actions"><button className="primary-button" onClick={onEpilogue}>Сцена через год <span>→</span></button><button className="quiet-button" onClick={onRestart}>Начать заново</button></div>{character && <img className="ending-character" src={character.portrait} alt="" />}</div></main>;
 }
 
-function Metric({ icon, label, value }) { return <div className="metric"><span>{icon}</span><div><small>{label}</small><strong>{Math.max(0, value)}</strong></div></div>; }
+function Epilogue({ onHome }) {
+  return <main className="epilogue-screen" style={{ '--scene': `url(${story.epilogue.background})` }}><div className="epilogue-bg" /><div className="epilogue-content"><span className="ending-kicker">ПОСЛЕДНЯЯ СЦЕНА</span><h1>{story.epilogue.title}</h1><p>{story.epilogue.text}</p><button className="primary-button" onClick={onHome}>Вернуться в меню <span>→</span></button></div></main>;
+}
 
 function Settings({ settings, onToggle, onReset, onClose }) {
-  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="settings-modal" role="dialog" aria-modal="true" aria-label="Настройки"><button className="modal-close" onClick={onClose}>×</button><span className="eyebrow"><span className="eyebrow-line" /> НАСТРОЙКИ</span><h2>Настрой игру<br /><em>под себя</em></h2><div className="setting-list"><SettingRow label="Атмосферная музыка" icon="♫" checked={settings.music} onClick={() => onToggle('music')} /><SettingRow label="Звуки выборов" icon="◌" checked={settings.sound} onClick={() => onToggle('sound')} /></div><button className="reset-button" onClick={onReset}>Сбросить весь прогресс</button><p className="settings-note">Прогресс хранится только в этом браузере.</p></section></div>;
+  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="settings-modal" role="dialog" aria-modal="true" aria-label="Настройки"><button className="modal-close" onClick={onClose}>×</button><span className="section-label">НАСТРОЙКИ</span><h2>Настрой игру<br /><em>под себя</em></h2><div className="setting-list"><SettingRow label="Музыкальное сопровождение" icon="♫" checked={settings.music} onClick={() => onToggle('music')} /><SettingRow label="Звуки выборов" icon="◌" checked={settings.sound} onClick={() => onToggle('sound')} /></div><button className="reset-button" onClick={onReset}>Сбросить весь прогресс</button><p className="settings-note">История сохраняется только в этом браузере.</p></section></div>;
 }
 
-function SettingRow({ label, icon, checked, onClick }) { return <button className="setting-row" onClick={onClick}><span className="setting-icon">{icon}</span><span>{label}</span><i className={checked ? 'toggle on' : 'toggle'}><b /></i></button>; }
+function SettingRow({ label, icon, checked, onClick }) {
+  return <button className="setting-row" onClick={onClick}><span className="setting-icon">{icon}</span><span>{label}</span><i className={checked ? 'toggle on' : 'toggle'}><b /></i></button>;
+}
 
 export default App;
+
+
+
+
+
+

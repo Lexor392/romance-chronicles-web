@@ -1,62 +1,46 @@
-let audioContext;
-let masterGain;
-let activeNodes = [];
+let musicElement = null;
+let currentTrack = null;
+let audioContext = null;
 
-const tracks = {
-  aurora: [174.61, 261.63, 349.23],
-  velvet: [146.83, 220, 293.66],
-  orbit: [110, 164.81, 246.94]
-};
-
-function ensureContext() {
-  if (!audioContext) {
-    audioContext = new window.AudioContext();
-    masterGain = audioContext.createGain();
-    masterGain.gain.value = 0.035;
-    masterGain.connect(audioContext.destination);
+export function playMusic(src) {
+  if (!src) return;
+  if (!musicElement) {
+    musicElement = new window.Audio();
+    musicElement.loop = true;
+    musicElement.volume = 0.32;
+    musicElement.preload = 'auto';
   }
-  if (audioContext.state === 'suspended') audioContext.resume();
+  if (currentTrack !== src) {
+    musicElement.src = src;
+    currentTrack = src;
+  }
+  const promise = musicElement.play();
+  if (promise?.catch) promise.catch(() => {});
 }
 
 export function stopMusic() {
-  activeNodes.forEach(({ oscillator, gain }) => {
-    try {
-      gain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 0.4);
-      oscillator.stop(audioContext.currentTime + 0.45);
-    } catch {
-      // Audio nodes may already be stopped.
-    }
-  });
-  activeNodes = [];
+  if (!musicElement) return;
+  musicElement.pause();
+  musicElement.currentTime = 0;
 }
 
-export function playMusic(trackId) {
-  ensureContext();
-  stopMusic();
-  tracks[trackId].forEach((frequency, index) => {
-    const oscillator = audioContext.createOscillator();
-    const gain = audioContext.createGain();
-    oscillator.type = index === 1 ? 'triangle' : 'sine';
-    oscillator.frequency.value = frequency;
-    gain.gain.value = 0.0001;
-    gain.gain.exponentialRampToValueAtTime(0.7, audioContext.currentTime + 1.2);
-    oscillator.connect(gain).connect(masterGain);
-    oscillator.start();
-    activeNodes.push({ oscillator, gain });
-  });
+export function setMusicVolume(volume) {
+  if (musicElement) musicElement.volume = volume;
 }
 
 export function playChoiceSound() {
-  if (!audioContext) return;
+  if (!window.AudioContext && !window.webkitAudioContext) return;
+  if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
   const oscillator = audioContext.createOscillator();
   const gain = audioContext.createGain();
   oscillator.type = 'sine';
-  oscillator.frequency.setValueAtTime(420, audioContext.currentTime);
-  oscillator.frequency.exponentialRampToValueAtTime(620, audioContext.currentTime + 0.18);
+  oscillator.frequency.setValueAtTime(520, audioContext.currentTime);
+  oscillator.frequency.exponentialRampToValueAtTime(740, audioContext.currentTime + 0.14);
   gain.gain.setValueAtTime(0.0001, audioContext.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.12, audioContext.currentTime + 0.03);
-  gain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 0.3);
-  oscillator.connect(gain).connect(masterGain);
+  gain.gain.exponentialRampToValueAtTime(0.06, audioContext.currentTime + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 0.22);
+  oscillator.connect(gain).connect(audioContext.destination);
   oscillator.start();
-  oscillator.stop(audioContext.currentTime + 0.32);
+  oscillator.stop(audioContext.currentTime + 0.24);
 }
+
